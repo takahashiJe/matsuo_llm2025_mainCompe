@@ -1,0 +1,36 @@
+# Environments
+.env
+.maLM25main/
+.uv_cache/
+.testenv/
+test/.testenv/
+
+# Cache
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+unsloth_compiled_cache/
+.ipynb_checkpoints/
+
+# Data
+data/
+*.jsonl
+
+# Models and outputs
+models/
+outputs/
+test/merged_model/
+
+# Logs
+wandb/
+*.log
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+*~
