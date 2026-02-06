@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+import random
 
 
 # -----------------------------
@@ -36,41 +37,6 @@ DEFAULT_DAICHIRA_SOURCES = [
     "data/raw/daichira__structured-5k-mix-sft/train.jsonl",
     "data/raw/daichira__structured-hard-sft-4k/train.jsonl",
 ]
-
-METADATA_FIELDS = [
-    "format",
-    "complexity",
-    "schema",
-    "constraint",
-    "type",
-    "prompt",
-    "output",
-    "estimated_tokens",
-    "source",
-    "id",
-    "category",
-    "subcategory",
-    "task",
-    "seed",
-]
-
-META_DEFAULTS: Dict[str, object] = {
-    "format": "",
-    "complexity": "",
-    "schema": "",
-    "constraint": "",
-    "type": "",
-    "prompt": "",
-    "output": "",
-    "estimated_tokens": -1,
-    "source": "",
-    "id": "",
-    "category": "",
-    "subcategory": "",
-    "task": "",
-    "seed": "",
-}
-
 
 # -----------------------------
 # 低レベル: JSON 読み込み
@@ -156,30 +122,13 @@ def extract_prompt_output(record: dict) -> Tuple[Optional[str], Optional[str]]:
 
 def normalize_record(record: dict, source: str) -> dict:
     """
-    `messages + metadata` の統一スキーマに変換する。
-    - u-10bei: metadata を引き継ぎ、source を追加
-    - daichira: id/category/... を metadata に移す
-      かつ assistant 先頭に `Output: ` を付与（Output 部分を明示）
+    `messages` + `metadata` の統一スキーマに変換する。
+    - daichira: assistant 先頭に `Output: ` を付与（Output 部分を明示）
+    - すべてのデータで loss_mask_mode = output_only
     """
     messages = record.get("messages", [])
-    meta: Dict[str, object] = dict(META_DEFAULTS)
-    prompt, output = extract_prompt_output(record)
-    meta["prompt"] = prompt if isinstance(prompt, str) else ""
-    meta["output"] = output if isinstance(output, str) else ""
-
-    if "metadata" in record and isinstance(record["metadata"], dict):
-        # u-10bei 系
-        for key in ["format", "complexity", "schema", "constraint", "type", "estimated_tokens"]:
-            if key in record["metadata"]:
-                value = record["metadata"][key]
-                if value is not None:
-                    meta[key] = value
-    else:
-        # daichira 系
-        for key in ["id", "category", "subcategory", "task", "seed"]:
-            if key in record:
-                meta[key] = record[key]
-        # daichira 系は Output タグが無いので付与する
+    # daichira 系は Output タグが無いので付与する
+    if not (isinstance(record.get("metadata"), dict)):
         for m in messages:
             if not isinstance(m, dict):
                 continue
@@ -189,12 +138,8 @@ def normalize_record(record: dict, source: str) -> dict:
                     m["content"] = "Output: " + content
                 break
 
-    meta["source"] = source
-
-    return {
-        "messages": messages,
-        "metadata": meta,
-    }
+    # すべてのデータで Output タグ以降のみを学習対象にする
+    return {"messages": messages, "metadata": {"loss_mask_mode": "output_only"}}
 
 
 # -----------------------------
@@ -308,7 +253,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out-merged",
-        default="",
+        default="data/processed/20260206_mix_v1.jsonl",
         help="Optional merged output JSONL path (set empty string to skip)",
     )
     parser.add_argument(
@@ -328,6 +273,8 @@ def main() -> None:
 
     if args.out_merged.strip():
         merged = u_records + d_records
+        rng = random.Random(42)
+        rng.shuffle(merged)
         write_jsonl(merged, Path(args.out_merged))
 
     write_report(u_stats, d_stats, Path(args.report))

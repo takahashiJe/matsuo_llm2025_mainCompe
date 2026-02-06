@@ -8,6 +8,8 @@ TRL + QLoRA 学習スクリプト
 - QLoRA 設定で SFTTrainer を実行
 """
 
+# python scripts/train_lora.py --config configs/exp/20260206_mix_v1.yaml --run-id 20260206_mix_v1
+
 from __future__ import annotations
 
 import argparse
@@ -36,6 +38,12 @@ def load_config(path: Path) -> Dict[str, object]:
 def build_run_dir(base_dir: str, run_name_prefix: str = "") -> str:
     ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     return str(Path(base_dir) / f"{run_name_prefix}{ts}")
+
+
+def resolve_output_dir(base_dir: str, run_id: Optional[str], run_name_prefix: str = "") -> str:
+    if run_id:
+        return str(Path(base_dir) / run_id)
+    return build_run_dir(base_dir, run_name_prefix=run_name_prefix)
 
 
 def messages_to_text(messages: List[dict]) -> str:
@@ -136,12 +144,16 @@ class OutputTagCollator:
     - input_ids は全文
     - labels は Output タグ直後から input_ids をコピーし、それ以前は -100
     - タグが無い場合は全文を loss 対象
+    - loss_mask_mode が "full" の場合は全文を loss 対象
+    - loss_mask_mode が "output_only" の場合は Output タグ以降のみ
+    - mode 未指定の場合は system ロールが含まれると全文対象（u-10bei系を想定）
     """
 
     def __init__(self, cfg: CollatorConfig) -> None:
         self.cfg = cfg
 
     def __call__(self, features: List[Dict[str, object]]) -> Dict[str, torch.Tensor]:
+        modes = [f.pop("loss_mask_mode", "auto") for f in features]
         tok = self.cfg.tokenizer.pad(
             features,
             padding=True,
@@ -162,13 +174,23 @@ class OutputTagCollator:
             ids = input_ids[i, :valid_len].tolist()
             text = self.cfg.tokenizer.decode(ids, skip_special_tokens=False)
 
+            mode = modes[i] if i < len(modes) else "auto"
+            if mode == "full":
+                continue
+            if mode == "auto" and "<|system|>" in text:
+                continue
+
             hit = find_first_tag_pos(text, self.cfg.tags)
             if hit is None:
                 # タグが無い場合は全文を学習対象
                 continue
 
             tag_pos, tag = hit
-            prefix = text[: tag_pos + len(tag)]
+            end = tag_pos + len(tag)
+            # タグ直後の空白・改行も除外して学習対象を厳密に「タグ以降」にする
+            while end < len(text) and text[end] in (" ", "\t", "\n", "\r"):
+                end += 1
+            prefix = text[:end]
             prefix_ids = self.cfg.tokenizer(
                 prefix, truncation=True, max_length=self.cfg.max_length, add_special_tokens=False
             )["input_ids"]
@@ -259,6 +281,7 @@ def run_training(
     config_path: str = "configs/train_lora.yaml",
     data_path_override: Optional[str] = None,
     second_data_path_override: Optional[str] = None,
+    run_id: Optional[str] = None,
     sanity: bool = False,
     sanity_train_size: int = 64,
     sanity_eval_size: int = 16,
@@ -284,7 +307,7 @@ def run_training(
 
     base_model = model_cfg["base_model"]
     run_name_prefix = sanity_run_name_prefix if sanity else ""
-    output_dir = build_run_dir(train_cfg["output_dir"], run_name_prefix=run_name_prefix)
+    output_dir = resolve_output_dir(train_cfg["output_dir"], run_id, run_name_prefix=run_name_prefix)
     run_name = Path(output_dir).name
     max_length = int(train_cfg["max_length"])
     effective_epochs = (
@@ -302,6 +325,10 @@ def run_training(
     if second_data_path:
         stage_data_paths.append(second_data_path)
     print(f"Stage datasets: {stage_data_paths}")
+
+    output_path = Path(output_dir)
+    if output_path.exists() and any(output_path.iterdir()):
+        raise RuntimeError(f"出力先が既に存在します。別の --run-id を指定してください: {output_dir}")
 
     # Unsloth でモデル・トークナイザを初期化
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -348,7 +375,9 @@ def run_training(
 
         def format_fn(example: Dict[str, object]) -> Dict[str, str]:
             messages = example.get("messages", [])
-            return {"text": messages_to_text(messages)}
+            meta = example.get("metadata") or {}
+            mode = str(meta.get("loss_mask_mode", "auto"))
+            return {"text": messages_to_text(messages), "loss_mask_mode": mode}
 
         ds = ds_raw.map(format_fn, remove_columns=ds_raw["train"].column_names)
 
@@ -477,11 +506,18 @@ def main() -> None:
         default=None,
         help="Optional second stage data path; trained after --data-path",
     )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="outputs/models/{run_id} に固定して出力する",
+    )
     args = parser.parse_args()
     run_training(
         config_path=args.config,
         data_path_override=args.data_path,
         second_data_path_override=args.second_data_path,
+        run_id=args.run_id,
         sanity=False,
     )
 

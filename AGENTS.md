@@ -45,40 +45,6 @@ set +a
 mkdir -p data/raw data/processed data/splits data/cache outputs
 ```
 
-## .ipynb と .py の使い分け（探索→再現のサイクル）
-- `notebooks/` は探索専用（理解・試行錯誤・小規模実験）
-- `scripts/` は実行入口（再現性のある処理を回す）
-- `src/` は再利用する本体ロジック（`scripts/` から呼び出す）
-- うまくいった処理は `.ipynb` から `.py` に移植する
-
-おすすめ構成:
-```
-notebooks/
-  00_data_check.ipynb
-  01_preprocess_try.ipynb
-  02_train_sanity.ipynb
-scripts/
-  prepare_data.py
-  train_lora.py
-  evaluate.py
-src/
-  datasets/
-    structured_dataset.py
-  models/
-    lora_utils.py
-  training/
-    train_loop.py
-  utils/
-    logging.py
-    seed.py
-```
-
-### サイクルの頻度（目安）
-- 初期（データ確認〜前処理）: 1〜2時間ごとに1サイクル
-- 中期（学習パイプライン構築）: 1回の学習実験ごとに1サイクル
-- 後期（改善・チューニング）: 変更1つにつき1サイクル
-- 変更は一度に1つだけ入れる
-
 ## GPU確認
 ```bash
 python - <<'PY'
