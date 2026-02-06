@@ -1,0 +1,28 @@
+--index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.9.1
+torchvision==0.24.1
+torchaudio==2.9.1
+numpy==2.0.2
+pandas==2.2.2
+transformers==4.56.2
+datasets==4.3.0
+trl==0.24.0
+rich
+accelerate==1.4.0
+peft==0.13.2
+bitsandbytes==0.45.5
+sentencepiece
+safetensors
+tokenizers
+evaluate
+scikit-learn
+wandb
+pyyaml
+pyarrow==21.0.0
+jupyter
+huggingface_hub
+unsloth-zoo==2025.12.7
+unsloth==2025.12.7
+
+# uv pip install --index-strategy unsafe-best-match -r requirements.txt

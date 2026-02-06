@@ -1,0 +1,36 @@
+model:
+  base_model: "Qwen/Qwen3-4B-Instruct-2507"
+data:
+  data_path: "data/processed/train_u10bei.jsonl"
+  second_data_path: "data/processed/train_daichira.jsonl"
+  eval_ratio: 0.1
+  seed: 42
+training:
+  output_dir: "outputs/models"
+  max_length: 2560
+  epochs: 1
+  batch_size: 1
+  grad_accum: 8
+  learning_rate: 1.0e-4
+  save_steps: 500
+  eval_steps: 500
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  precision: "bf16"
+  packing: false
+  gradient_checkpointing: "unsloth"
+  eval_sample_size: 8
+  eval_max_new_tokens: 256
+  eval_temperature: 0.7
+  eval_top_p: 0.9
+lora:
+  r: 8
+  alpha: 16
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
