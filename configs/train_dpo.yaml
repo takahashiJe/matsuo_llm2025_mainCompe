@@ -1,0 +1,33 @@
+model:
+  base_model: "Qwen/Qwen3-4B-Instruct-2507"
+  adapter_path: "outputs/models/20260206-204735"
+data:
+  dataset: "u-10bei/dpo-dataset-qwen-cot"
+  split: "train"
+training:
+  output_dir: "outputs/dpo_runs/20260206-204735_dpo"
+  max_length: 2048
+  max_prompt_length: 1024
+  epochs: 2
+  batch_size: 1
+  grad_accum: 32
+  learning_rate: 5.0e-7
+  precision: "bf16"
+  gradient_checkpointing: true
+  logging_steps: 50
+dpo:
+  beta: 0.1
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"

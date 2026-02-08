@@ -43,7 +43,7 @@ def _resolve_model_dir(run_id: str | None, model_dir: str | None) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Upload LoRA adapter to Hugging Face Hub")
+    parser = argparse.ArgumentParser(description="Upload model/adapter to Hugging Face Hub")
     parser.add_argument("--run-id", help="outputs/models/{run_id} の run_id")
     parser.add_argument("--model-dir", help="学習済みモデルの保存先ディレクトリ")
     parser.add_argument(
@@ -56,6 +56,15 @@ def main() -> None:
         default="outputs/hf_upload_stage",
         help="アップロード用の一時ディレクトリ (default: outputs/hf_upload_stage)",
     )
+    parser.add_argument(
+        "--repo-id",
+        help="アップロード先の Hugging Face リポジトリ (優先)。例: JuntaTakahashi/qwen3-4b-structured-sft-lora",
+    )
+    parser.add_argument(
+        "--repo-env",
+        default="HF_LORA_REPO",
+        help="アップロード先リポジトリを取得する環境変数名 (default: HF_REPO)",
+    )
     args = parser.parse_args()
 
     _load_dotenv(Path(".env"))
@@ -65,7 +74,7 @@ def main() -> None:
         raise RuntimeError(f"モデル保存ディレクトリが見つかりません: {lora_save_dir}")
 
     hf_token = _getenv("HF_API")
-    hf_repo_id = _getenv("HF_REPO")
+    hf_repo_id = args.repo_id or _getenv(args.repo_env)
     private = _getenv("HF_PRIVATE", "1") in ("1", "true", "True")
 
     api = HfApi(token=hf_token)
@@ -73,6 +82,13 @@ def main() -> None:
     # 3.1) 必須ファイルの存在確認
     present = {p.name for p in lora_save_dir.iterdir() if p.is_file()}
     if args.merged:
+        # merged モデルに adapter_config.json があるのは異常
+        if "adapter_config.json" in present:
+            raise RuntimeError(
+                "アップロードを中止しました。\n"
+                "merged モデルに adapter_config.json が含まれています。\n"
+                "これは LoRA アダプタの構成です。merged モデルを指定してください。"
+            )
         required_files = {"config.json", "README.md"}
         missing = [f for f in required_files if f not in present]
         if not (
@@ -80,6 +96,18 @@ def main() -> None:
             or any(fnmatch.fnmatch(name, "pytorch_model.*") for name in present)
         ):
             missing.append("model.(safetensors|bin) or pytorch_model.(bin|safetensors)")
+        if "config.json" in present:
+            try:
+                cfg = json.loads((lora_save_dir / "config.json").read_text(encoding="utf-8"))
+                # PEFT/adapter系の痕跡があればmergedとしては不正
+                if any(k in cfg for k in ("peft_type", "adapter_config", "adapter_type")):
+                    raise RuntimeError(
+                        "アップロードを中止しました。\n"
+                        "config.json に PEFT/adapter の設定が含まれています。\n"
+                        "これは merged モデルではなくアダプタ構成の可能性があります。"
+                    )
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"config.json の読み込みに失敗しました: {e}") from e
     else:
         required_files = {"adapter_config.json", "README.md"}
         missing = [f for f in required_files if f not in present]
@@ -101,7 +129,13 @@ def main() -> None:
             "README.md",
             "config.json",
             "model.*",
+            "model-*",
+            "model-*.safetensors",
+            "model-*.bin",
             "pytorch_model.*",
+            "pytorch_model-*",
+            "pytorch_model-*.bin",
+            "pytorch_model-*.safetensors",
             "chat_template.jinja",
             "tokenizer.*",
             "special_tokens_map.json",

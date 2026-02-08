@@ -173,17 +173,17 @@ MODEL_SOURCE = "adapter_merge"   # "merged" | "base" | "adapter_merge"
 
 # base model (HF repo id or local path)
 # 学習時に使用したベースモデルを入れてください。
-BASE_MODEL_ID_OR_PATH   = "Qwen/Qwen3-4B-Instruct-2507"
+BASE_MODEL_ID_OR_PATH   = "JuntaTakahashi/qwen3-4b-structured-sft-lora"
 
 # merged model (HF repo id or local path)
 # アダプタではなくマージモデルをアップロードした場合は、ここにIDをいれてください。
 # "merged"を選択した場合に記入
-MERGED_MODEL_ID_OR_PATH = "JuntaTakahashi/qwen3-4b-structured-sft-lora"
+# MERGED_MODEL_ID_OR_PATH = "JuntaTakahashi/qwen3-4b-structured-sft-lora"
 
 # adapter merge
 # あなたがHuggingFaceにアップロードしたアダプタのIDを入れてください。
 # "adapter_merge"を選択した場合に記入
-ADAPTER_ID       = "JuntaTakahashi/qwen3-4b-structured-sft-lora"
+ADAPTER_ID       = "JuntaTakahashi/qwen3-4b-structured-dpo-lora"
 
 # merge済モデルの一時保存
 MERGED_LOCAL_DIR = str(BASE_DIR / "merged_model")
