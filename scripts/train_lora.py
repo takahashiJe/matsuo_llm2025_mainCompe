@@ -320,6 +320,7 @@ def run_training(
     config_path: str = "configs/train_lora.yaml",
     data_path_override: Optional[str] = None,
     second_data_path_override: Optional[str] = None,
+    third_data_path_override: Optional[str] = None,
     run_id: Optional[str] = None,
     adapter_path: Optional[str] = None,
     sanity: bool = False,
@@ -339,10 +340,16 @@ def run_training(
 
     data_path = data_path_override if data_path_override else data_cfg["data_path"]
     second_data_path_cfg = data_cfg.get("second_data_path")
+    third_data_path_cfg = data_cfg.get("third_data_path")
     second_data_path = (
         second_data_path_override
         if second_data_path_override is not None
         else (str(second_data_path_cfg) if second_data_path_cfg else None)
+    )
+    third_data_path = (
+        third_data_path_override
+        if third_data_path_override is not None
+        else (str(third_data_path_cfg) if third_data_path_cfg else None)
     )
     eval_ratio = float(data_cfg["eval_ratio"])
     seed = int(data_cfg["seed"])
@@ -370,6 +377,8 @@ def run_training(
     stage_data_paths = [data_path]
     if second_data_path:
         stage_data_paths.append(second_data_path)
+    if third_data_path:
+        stage_data_paths.append(third_data_path)
     print(f"Stage datasets: {stage_data_paths}")
 
     output_path = Path(output_dir)
@@ -702,6 +711,12 @@ def main() -> None:
         help="Optional second stage data path; trained after --data-path",
     )
     parser.add_argument(
+        "--third-data-path",
+        type=str,
+        default=None,
+        help="Optional third stage data path; trained after --second-data-path",
+    )
+    parser.add_argument(
         "--run-id",
         type=str,
         default=None,
@@ -712,6 +727,7 @@ def main() -> None:
         config_path=args.config,
         data_path_override=args.data_path,
         second_data_path_override=args.second_data_path,
+        third_data_path_override=args.third_data_path,
         run_id=args.run_id,
         sanity=False,
     )

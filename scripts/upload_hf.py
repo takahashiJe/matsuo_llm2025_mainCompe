@@ -2,7 +2,7 @@
 
 # python scripts/upload_hf.py --merged --model-dir outputs/models/20260206-005340_merged
 # python scripts/upload_hf.py --run-id 20260206-005340 --repo-id JuntaTakahashi/qwen3-4b-structured-sft-lora-adapter
-# python scripts/upload_hf.py --run-id 20260211_v2/phase3 --repo-id JuntaTakahashi/qwen3-4b-structured-dpo-lora
+# python scripts/upload_hf.py --run-id 20260211_v3/phase3 --repo-id JuntaTakahashi/qwen3-4b-structured-dpo-lora
 
 import argparse
 import fnmatch

@@ -508,7 +508,10 @@ def main() -> None:
         cfg["training"]["output_dir"] = str(base_output_dir)
     phase1_out = base_output_dir / "phase1"
     phase2_out = base_output_dir / "phase2"
+    phase2_5_out = base_output_dir / "phase2_5"
     phase3_out = base_output_dir / "phase3"
+
+    has_phase2_5 = "phase2_5" in cfg
 
     start_phase = int(args.start_phase)
     if start_phase <= 1 and not args.single_run_phase1_2:
@@ -519,16 +522,26 @@ def main() -> None:
             raise RuntimeError(f"phase1 output is required but missing: {phase1_out}")
     if start_phase <= 2 and phase2_out.exists() and any(phase2_out.iterdir()):
         raise RuntimeError(f"phase2 output already exists: {phase2_out}")
+    if has_phase2_5 and start_phase <= 2 and phase2_5_out.exists() and any(phase2_5_out.iterdir()):
+        raise RuntimeError(f"phase2_5 output already exists: {phase2_5_out}")
     if start_phase <= 3 and phase3_out.exists() and any(phase3_out.iterdir()):
         raise RuntimeError(f"phase3 output already exists: {phase3_out}")
+    if has_phase2_5 and start_phase == 3:
+        if not phase2_5_out.exists() or not any(phase2_5_out.iterdir()):
+            raise RuntimeError(f"phase2_5 output is required but missing: {phase2_5_out}")
+    if has_phase2_5 and start_phase <= 2 and not args.single_run_phase1_2:
+        raise RuntimeError("phase2_5 requires --single-run-phase1-2 to avoid adapter_path.")
 
     data_cfg = cfg["data"]
     seed = int(data_cfg["seed"])
+    phase2_5_data = None
     if start_phase <= 2:
         phase1_data = Path(data_cfg["phase1_data_path"])
         phase2_u10bei = Path(data_cfg["phase2_u10bei_path"])
         phase2_daichira = Path(data_cfg["phase2_daichira_path"])
         phase2_ratio = float(data_cfg["phase2_daichira_ratio"])
+        if has_phase2_5:
+            phase2_5_data = Path(data_cfg["phase2_5_toml_path"])
 
         if not phase1_data.exists():
             raise FileNotFoundError(f"phase1 data not found: {phase1_data}")
@@ -536,6 +549,8 @@ def main() -> None:
             raise FileNotFoundError(f"phase2 u10bei data not found: {phase2_u10bei}")
         if not phase2_daichira.exists():
             raise FileNotFoundError(f"phase2 daichira data not found: {phase2_daichira}")
+        if has_phase2_5 and phase2_5_data is not None and not phase2_5_data.exists():
+            raise FileNotFoundError(f"phase2_5 TOML data not found: {phase2_5_data}")
 
         phase2_data_path = base_output_dir / "phase2_mixed.jsonl"
         phase2_data_path = build_phase2_dataset(
@@ -555,6 +570,12 @@ def main() -> None:
         epochs=float(cfg["phase2"]["epochs"]),
         learning_rate=float(cfg["phase2"]["learning_rate"]),
     )
+    phase2_5_cfg = None
+    if has_phase2_5:
+        phase2_5_cfg = PhaseConfig(
+            epochs=float(cfg["phase2_5"]["epochs"]),
+            learning_rate=float(cfg["phase2_5"]["learning_rate"]),
+        )
     dpo_cfg = DPOConfigLite(
         dataset_path=str(cfg["dpo"]["dataset_path"]),
         max_seq_length=int(cfg["dpo"]["max_seq_length"]),
@@ -575,6 +596,7 @@ def main() -> None:
 
     phase1_cfg_path = base_output_dir / "phase1_config.yaml"
     phase2_cfg_path = base_output_dir / "phase2_config.yaml"
+    phase2_5_cfg_path = base_output_dir / "phase2_5_config.yaml"
 
     if start_phase <= 2:
         write_yaml(
@@ -595,6 +617,16 @@ def main() -> None:
                 output_dir=str(base_output_dir),
             ),
         )
+        if has_phase2_5 and phase2_5_cfg and phase2_5_data is not None:
+            write_yaml(
+                phase2_5_cfg_path,
+                make_phase_config(
+                    base_cfg=cfg,
+                    phase_cfg=phase2_5_cfg,
+                    data_path=str(phase2_5_data),
+                    output_dir=str(base_output_dir),
+                ),
+            )
 
     if start_phase <= 2 and args.single_run_phase1_2:
         print("=== Phase1+2: Single run (daichira -> u-10bei + rehearsal) ===")
@@ -606,23 +638,35 @@ def main() -> None:
             output_dir=str(base_output_dir),
         )
         combined_cfg["data"]["second_data_path"] = str(phase2_data_path)
+        if has_phase2_5 and phase2_5_data is not None:
+            combined_cfg["data"]["third_data_path"] = str(phase2_5_data)
         combined_cfg_path = base_output_dir / "phase1_2_config.yaml"
         write_yaml(combined_cfg_path, combined_cfg)
         run_training(
             config_path=str(combined_cfg_path),
             run_id="phase2",
             sanity=args.sanity,
-            stage_output_names=["phase1", "phase2"],
+            stage_output_names=["phase1", "phase2", "phase2_5"] if has_phase2_5 else ["phase1", "phase2"],
             output_dir_override=str(base_output_dir),
         )
-        merge_and_upload_phase2(
-            base_output_dir=base_output_dir,
-            phase2_out=phase2_out,
-            base_model=cfg["model"]["base_model"],
-            phase2_cfg=phase2_cfg,
-            lora_cfg=cfg["lora"],
-            max_length=int(cfg["training"]["max_length"]),
-        )
+        if has_phase2_5 and phase2_5_cfg is not None:
+            merge_and_upload_phase2(
+                base_output_dir=base_output_dir,
+                phase2_out=phase2_5_out,
+                base_model=cfg["model"]["base_model"],
+                phase2_cfg=phase2_5_cfg,
+                lora_cfg=cfg["lora"],
+                max_length=int(cfg["training"]["max_length"]),
+            )
+        else:
+            merge_and_upload_phase2(
+                base_output_dir=base_output_dir,
+                phase2_out=phase2_out,
+                base_model=cfg["model"]["base_model"],
+                phase2_cfg=phase2_cfg,
+                lora_cfg=cfg["lora"],
+                max_length=int(cfg["training"]["max_length"]),
+            )
     elif start_phase <= 1:
         print("=== Phase1: SFT (daichira) ===")
         run_training(
@@ -639,7 +683,6 @@ def main() -> None:
             adapter_path=str(phase1_out),
             sanity=args.sanity,
         )
-
         merge_and_upload_phase2(
             base_output_dir=base_output_dir,
             phase2_out=phase2_out,
