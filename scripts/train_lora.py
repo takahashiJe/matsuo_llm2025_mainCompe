@@ -15,19 +15,54 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from types import MethodType
+
+if os.environ.get("UNSLOTH_FORCE_SDPA", "0") == "1":
+    os.environ.setdefault("XFORMERS_FORCE_DISABLE", "1")
+    os.environ.setdefault("XFORMERS_DISABLED", "1")
+else:
+    # Ensure xFormers is not accidentally disabled via environment.
+    os.environ.pop("XFORMERS_FORCE_DISABLE", None)
+    os.environ.pop("XFORMERS_DISABLED", None)
 
 import torch
 import yaml
 from datasets import load_dataset
+from peft import PeftModel
 from unsloth import FastLanguageModel
 from transformers import EarlyStoppingCallback, TrainerCallback
 from trl import SFTConfig, SFTTrainer
 
 
 MASK_TAGS = ["Output:", "OUTPUT:", "Final:", "Answer:", "Result:", "Response:"]
+
+if os.environ.get("UNSLOTH_FORCE_SDPA", "0") == "1":
+    # Force PyTorch to use math SDPA and avoid xformers/flash kernels.
+    try:
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_math_sdp(True)
+    except Exception:
+        pass
+else:
+    # Explicitly allow xFormers when available.
+    try:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+    except Exception:
+        pass
+    # Unsloth picks xformers if it's installed. Force SDPA to avoid xformers.
+    try:
+        import unsloth.utils.attention_dispatch as _attn_dispatch
+
+        _attn_dispatch.HAS_XFORMERS = False
+        _attn_dispatch.XFORMERS_BLOCK_DIAG_CLS = None
+    except Exception:
+        pass
 
 
 def load_config(path: Path) -> Dict[str, object]:
@@ -273,6 +308,10 @@ class EvalSampleCallback(TrainerCallback):
             for r in results:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+        # Release unused cached GPU memory after generation to reduce fragmentation.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         if model_was_training:
             model.train()
 
@@ -282,12 +321,15 @@ def run_training(
     data_path_override: Optional[str] = None,
     second_data_path_override: Optional[str] = None,
     run_id: Optional[str] = None,
+    adapter_path: Optional[str] = None,
     sanity: bool = False,
     sanity_train_size: int = 64,
     sanity_eval_size: int = 16,
     sanity_run_name_prefix: str = "sanity-",
     sanity_num_train_epochs: Optional[float] = None,
     sanity_logging_steps: Optional[int] = None,
+    stage_output_names: Optional[List[str]] = None,
+    output_dir_override: Optional[str] = None,
 ) -> None:
     cfg = load_config(Path(config_path))
     data_cfg = cfg["data"]
@@ -307,7 +349,11 @@ def run_training(
 
     base_model = model_cfg["base_model"]
     run_name_prefix = sanity_run_name_prefix if sanity else ""
-    output_dir = resolve_output_dir(train_cfg["output_dir"], run_id, run_name_prefix=run_name_prefix)
+    output_dir = (
+        output_dir_override
+        if output_dir_override is not None
+        else resolve_output_dir(train_cfg["output_dir"], run_id, run_name_prefix=run_name_prefix)
+    )
     run_name = Path(output_dir).name
     max_length = int(train_cfg["max_length"])
     effective_epochs = (
@@ -328,7 +374,8 @@ def run_training(
 
     output_path = Path(output_dir)
     if output_path.exists() and any(output_path.iterdir()):
-        raise RuntimeError(f"出力先が既に存在します。別の --run-id を指定してください: {output_dir}")
+        if not stage_output_names:
+            raise RuntimeError(f"出力先が既に存在します。別の --run-id を指定してください: {output_dir}")
 
     # Unsloth でモデル・トークナイザを初期化
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -341,24 +388,103 @@ def run_training(
         tokenizer.pad_token = tokenizer.eos_token
 
     # Unsloth + QLoRA (gradient checkpointing は unsloth 版)
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=int(lora_cfg["r"]),
-        lora_alpha=int(lora_cfg["alpha"]),
-        target_modules=list(lora_cfg["target_modules"]),
-        lora_dropout=0.05,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=seed,
-        use_rslora=False,
-        loftq_config=None,
-    )
+    if adapter_path:
+        adapter_dir = Path(adapter_path)
+        if not adapter_dir.exists():
+            raise FileNotFoundError(f"adapter_path not found: {adapter_dir}")
+        # Ensure adapter is not saved as inference-only.
+        adapter_cfg_path = adapter_dir / "adapter_config.json"
+        if adapter_cfg_path.exists():
+            try:
+                adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+                if adapter_cfg.get("inference_mode") is True:
+                    adapter_cfg["inference_mode"] = False
+                    adapter_cfg_path.write_text(
+                        json.dumps(adapter_cfg, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception:
+                pass
+        model = PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=True)
+        # Expose Unsloth training/inference toggles on the PEFT wrapper if present on base.
+        try:
+            base = None
+            if hasattr(model, "get_base_model"):
+                base = model.get_base_model()
+            elif hasattr(model, "base_model"):
+                base = model.base_model
+            elif hasattr(model, "model"):
+                base = model.model
+            if base is not None and hasattr(base, "for_training"):
+                model.for_training = base.for_training
+                if hasattr(base, "for_inference"):
+                    model.for_inference = base.for_inference
+        except Exception:
+            pass
+        # Ensure adapter is active and trainable for phase2.
+        adapter_name = None
+        if hasattr(model, "peft_config"):
+            if isinstance(model.peft_config, dict) and model.peft_config:
+                adapter_name = next(iter(model.peft_config.keys()))
+                # Override inference_mode if saved as inference-only.
+                try:
+                    model.peft_config[adapter_name].inference_mode = False
+                except Exception:
+                    pass
+        try:
+            if adapter_name and hasattr(model, "set_adapter"):
+                model.set_adapter(adapter_name)
+        except Exception:
+            pass
+        try:
+            model.enable_adapter_layers()
+        except Exception:
+            pass
+        try:
+            if hasattr(model, "for_training"):
+                model.for_training()
+        except Exception:
+            pass
+        model.train()
+        # Safety: ensure LoRA params are trainable even if PEFT defaults differ.
+        for name, param in model.named_parameters():
+            if "lora" in name.lower():
+                param.requires_grad = True
+        # Fail fast if nothing is trainable.
+        trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+        if not trainable:
+            raise RuntimeError("No trainable parameters after loading adapter.")
+        print(f"[debug] Trainable params (count): {len(trainable)}")
+        print(f"[debug] Trainable params (sample): {trainable[:5]}")
+    else:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=int(lora_cfg["r"]),
+            lora_alpha=int(lora_cfg["alpha"]),
+            target_modules=list(lora_cfg["target_modules"]),
+            lora_dropout=0.0,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=seed,
+            use_rslora=False,
+            loftq_config=None,
+        )
 
     stage_records = []
+    single_stage = len(stage_data_paths) == 1
     for stage_idx, stage_data_path in enumerate(stage_data_paths, start=1):
-        stage_name = f"stage{stage_idx}"
-        stage_run_name = f"{run_name}-{stage_name}"
-        stage_output_dir = Path(output_dir) / stage_name
+        if single_stage:
+            stage_name = "main"
+            stage_run_name = run_name
+            stage_output_dir = Path(output_dir)
+        else:
+            if stage_output_names and stage_idx - 1 < len(stage_output_names):
+                stage_name = stage_output_names[stage_idx - 1]
+            else:
+                stage_name = f"stage{stage_idx}"
+            # Use clean run names for W&B when custom stage names are provided.
+            stage_run_name = stage_name if stage_output_names else f"{run_name}-{stage_name}"
+            stage_output_dir = Path(output_dir) / stage_name
         print(f"[{stage_name}] Loading dataset: {stage_data_path}")
 
         ds_raw = load_dataset("json", data_files=stage_data_path, split="train")
@@ -421,7 +547,9 @@ def run_training(
         length_stats = compute_length_stats(ds["train"]["text"], tokenizer, max_length=max_length)
         save_yaml(stage_output_dir / "run_meta.yaml", run_meta)
         save_yaml(stage_output_dir / "length_stats.yaml", length_stats)
-        stage_records.append({"stage": stage_name, "data_path": stage_data_path})
+        stage_records.append(
+            {"stage": stage_name, "data_path": stage_data_path, "output_dir": str(stage_output_dir)}
+        )
 
         args = SFTConfig(
             output_dir=str(stage_output_dir),
@@ -443,11 +571,25 @@ def run_training(
             metric_for_best_model="eval_loss",
             greater_is_better=False,
             dataset_num_proc=2,
+            do_train=True,
         )
 
         collator = OutputTagCollator(
             CollatorConfig(tokenizer=tokenizer, max_length=max_length, tags=MASK_TAGS)
         )
+        # Debug: ensure labels are not all -100 (no loss) for a small batch.
+        try:
+            sample_batch = [ds["train"][i] for i in range(min(2, len(ds["train"])))]
+            debug_inputs = [tokenizer(sample["text"], truncation=True, max_length=max_length) for sample in sample_batch]
+            debug = collator(debug_inputs)
+            valid_labels = (debug["labels"] != -100).sum().item()
+            print(f"[debug] Valid label tokens in sample batch: {valid_labels}")
+            if valid_labels == 0:
+                raise RuntimeError(
+                    "All labels are -100 in sample batch. Check Output tags or loss_mask_mode."
+                )
+        except Exception as e:
+            raise RuntimeError(f"Label debug check failed: {e}")
 
         trainer = SFTTrainer(
             model=model,
@@ -462,6 +604,59 @@ def run_training(
             dataset_text_field="text",
             dataset_num_proc=2,
         )
+        # Diagnostics: capture last inputs and intercept backward if loss has no grad.
+        orig_compute_loss = trainer.compute_loss
+        orig_backward = trainer.accelerator.backward
+
+        def _compute_loss(self, model, inputs, *args, **kwargs):
+            self._last_inputs = inputs
+            return orig_compute_loss(model, inputs, *args, **kwargs)
+
+        def _backward(loss, **kwargs):
+            if isinstance(loss, torch.Tensor) and not loss.requires_grad:
+                try:
+                    model_ref = trainer.model
+                    trainable = [n for n, p in model_ref.named_parameters() if p.requires_grad]
+                    print("[debug][no_grad] torch.is_grad_enabled:", torch.is_grad_enabled())
+                    print("[debug][no_grad] model.training:", getattr(model_ref, "training", None))
+                    print("[debug][no_grad] trainable param count:", len(trainable))
+                    inputs = getattr(trainer, "_last_inputs", None)
+                    if inputs is not None:
+                        for key in ("input_ids", "labels", "attention_mask"):
+                            if key in inputs:
+                                t = inputs[key]
+                                print(f"[debug][no_grad] {key}: shape={tuple(t.shape)} dtype={t.dtype} device={t.device}")
+                        dump = {
+                            "input_ids": inputs.get("input_ids"),
+                            "labels": inputs.get("labels"),
+                            "attention_mask": inputs.get("attention_mask"),
+                        }
+                        dump_path = stage_output_dir / "no_grad_batch.pt"
+                        torch.save(dump, dump_path)
+                        print(f"[debug][no_grad] Saved batch dump to: {dump_path}")
+                except Exception as e:
+                    print(f"[debug][no_grad] Failed to dump diagnostics: {e}")
+                raise RuntimeError("Loss has no grad (diagnostics dumped).")
+            return orig_backward(loss, **kwargs)
+
+        trainer.compute_loss = MethodType(_compute_loss, trainer)
+        trainer.accelerator.backward = _backward
+        # Debug: verify loss requires grad on a tiny batch.
+        try:
+            model.train()
+            sample = [ds["train"][0]]
+            sample_inputs = [tokenizer(sample[0]["text"], truncation=True, max_length=max_length)]
+            batch = collator(sample_inputs)
+            device = next(model.parameters()).device
+            batch = {k: v.to(device) for k, v in batch.items()}
+            out = model(**batch)
+            loss = out.loss if hasattr(out, "loss") else None
+            print(f"[debug] loss requires_grad: {getattr(loss, 'requires_grad', None)}")
+            print(f"[debug] loss grad_fn: {getattr(loss, 'grad_fn', None)}")
+            if loss is None or not getattr(loss, "requires_grad", False):
+                raise RuntimeError("Loss does not require grad on a debug batch.")
+        except Exception as e:
+            raise RuntimeError(f"Loss grad debug check failed: {e}")
         trainer.add_callback(
             EarlyStoppingCallback(
                 early_stopping_patience=int(train_cfg["early_stopping_patience"]),

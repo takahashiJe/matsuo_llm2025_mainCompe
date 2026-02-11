@@ -1,0 +1,38 @@
+model:
+  base_model: "Qwen/Qwen3-4B-Instruct-2507"
+
+data:
+  dataset_id: "u-10bei/structured_data_with_cot_dataset_512_v2"
+  eval_ratio: 0.05
+  seed: 3407
+
+training:
+  output_dir: "outputs/models/20260211_v1"
+  max_length: 512
+  batch_size: 2
+  grad_accum: 8
+  save_steps: 100
+  eval_steps: 50
+  logging_steps: 10
+  max_steps: -1
+  warmup_ratio: 0.1
+  weight_decay: 0.05
+  precision: "bf16"
+  packing: false
+  gradient_checkpointing: "unsloth"
+
+phase1:
+  epochs: 1
+  learning_rate: 1.0e-6
+
+lora:
+  r: 64
+  alpha: 128
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"

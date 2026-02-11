@@ -5,25 +5,23 @@ datasets:
 language:
 - en
 license: apache-2.0
-library_name: peft
+library_name: transformers
 pipeline_tag: text-generation
 tags:
-- qlora
-- lora
+- merged
 - structured-output
 ---
 
-qwen3-4b-structured-sft-lora
+qwen3-4b-structured-sft-merged
 
-This repository provides a **LoRA adapter** fine-tuned from
-**Qwen/Qwen3-4B-Instruct-2507** using **QLoRA (4-bit, Unsloth)**.
+This repository provides a **merged model** based on
+**Qwen3-4B-Instruct-2507** fine-tuned using **QLoRA (4-bit, Unsloth)**.
 
-This repository contains **LoRA adapter weights only**.
-The base model must be loaded separately.
+This repository contains **merged model weights**.
 
 ## Training Objective
 
-This adapter is trained to improve **structured output accuracy**
+This model is trained to improve **structured output accuracy**
 (JSON / YAML / XML / TOML / CSV).
 
 Loss is applied only to the final assistant output,
@@ -31,7 +29,7 @@ while intermediate reasoning (Chain-of-Thought) is masked.
 
 ## Training Configuration
 
-- Base model: Qwen/Qwen3-4B-Instruct-2507
+- Base model: Qwen3-4B-Instruct-2507
 - Method: QLoRA (4-bit)
 - Max sequence length: {max_seq_len}
 - Epochs: {epochs}
@@ -42,19 +40,16 @@ while intermediate reasoning (Chain-of-Thought) is masked.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 import torch
 
-base = "Qwen/Qwen3-4B-Instruct-2507"
-adapter = "JuntaTakahashi/qwen3-4b-structured-sft-lora"
+model_id = "{hf_lora_repo}"
 
-tokenizer = AutoTokenizer.from_pretrained(base)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(
-    base,
+    model_id,
     torch_dtype=torch.float16,
     device_map="auto",
 )
-model = PeftModel.from_pretrained(model, adapter)
 ```
 
 ## Sources & Terms (IMPORTANT)
@@ -63,4 +58,3 @@ Training data: {dataset_id}
 
 Dataset License: MIT License. This dataset is used and distributed under the terms of the MIT License.
 Compliance: Users must comply with the MIT license (including copyright notice) and the base model's original terms of use.
-"""
