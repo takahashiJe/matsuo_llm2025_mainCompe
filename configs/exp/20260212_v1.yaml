@@ -1,0 +1,60 @@
+model:
+  base_model: "Qwen/Qwen3-4B-Instruct-2507"
+data:
+  phase1_data_path: "data/processed/20260212_v1/train_daichira_denoised.jsonl"
+  phase2_u10bei_path: "data/processed/20260212_v1/train_u10bei_denoised.jsonl"
+  phase2_daichira_path: "data/processed/20260212_v1/train_daichira_denoised.jsonl"
+  phase2_daichira_ratio: 0.1
+  phase2_5_toml_path: "data/processed/20260212_v1/train_toml_u10bei_daichira_valid_aligned_sanitized.jsonl"
+  eval_ratio: 0.1
+  seed: 42
+training:
+  output_dir: "outputs/models/20260212_v1"
+  max_length: 512
+  batch_size: 2
+  grad_accum: 8
+  save_steps: 500
+  eval_steps: 500
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  precision: "bf16"
+  packing: false
+  gradient_checkpointing: "unsloth"
+  eval_sample_size: 8
+  eval_max_new_tokens: 256
+  eval_temperature: 0.7
+  eval_top_p: 0.9
+phase1:
+  epochs: 1
+  learning_rate: 1.0e-6
+phase2:
+  epochs: 1
+  learning_rate: 1.0e-6
+phase2_5:
+  epochs: 1
+  learning_rate: 5.0e-7
+dpo:
+  dataset_path: "data/processed/20260209_v1/train_dpo.jsonl"
+  max_seq_length: 512
+  max_length: 512
+  max_prompt_length: 512
+  epochs: 1
+  learning_rate: 1.0e-6
+  beta: 0.05
+  batch_size: 2
+  grad_accum: 8
+  logging_steps: 50
+  precision: "bf16"
+  gradient_checkpointing: true
+  max_samples: 0
+lora:
+  r: 64
+  alpha: 128
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
