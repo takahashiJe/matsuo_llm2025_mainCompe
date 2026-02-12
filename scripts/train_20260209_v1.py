@@ -638,8 +638,16 @@ def main() -> None:
             output_dir=str(base_output_dir),
         )
         combined_cfg["data"]["second_data_path"] = str(phase2_data_path)
+        stage_learning_rates = [phase1_cfg.learning_rate, phase2_cfg.learning_rate]
+        stage_epochs = [phase1_cfg.epochs, phase2_cfg.epochs]
         if has_phase2_5 and phase2_5_data is not None:
             combined_cfg["data"]["third_data_path"] = str(phase2_5_data)
+            if phase2_5_cfg is None:
+                raise RuntimeError("phase2_5 config is required when phase2_5 data is enabled.")
+            stage_learning_rates.append(phase2_5_cfg.learning_rate)
+            stage_epochs.append(phase2_5_cfg.epochs)
+        combined_cfg["training"]["stage_learning_rates"] = stage_learning_rates
+        combined_cfg["training"]["stage_epochs"] = stage_epochs
         combined_cfg_path = base_output_dir / "phase1_2_config.yaml"
         write_yaml(combined_cfg_path, combined_cfg)
         run_training(

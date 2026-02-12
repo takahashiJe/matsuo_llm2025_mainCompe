@@ -363,11 +363,6 @@ def run_training(
     )
     run_name = Path(output_dir).name
     max_length = int(train_cfg["max_length"])
-    effective_epochs = (
-        float(sanity_num_train_epochs)
-        if sanity and sanity_num_train_epochs is not None
-        else float(train_cfg["epochs"])
-    )
     effective_logging_steps = (
         int(sanity_logging_steps)
         if sanity and sanity_logging_steps is not None
@@ -380,6 +375,19 @@ def run_training(
     if third_data_path:
         stage_data_paths.append(third_data_path)
     print(f"Stage datasets: {stage_data_paths}")
+
+    stage_learning_rates_cfg = train_cfg.get("stage_learning_rates")
+    stage_epochs_cfg = train_cfg.get("stage_epochs")
+    if stage_learning_rates_cfg is not None and len(stage_learning_rates_cfg) != len(stage_data_paths):
+        raise RuntimeError(
+            "training.stage_learning_rates の要素数がステージ数と一致しません: "
+            f"{len(stage_learning_rates_cfg)} != {len(stage_data_paths)}"
+        )
+    if stage_epochs_cfg is not None and len(stage_epochs_cfg) != len(stage_data_paths):
+        raise RuntimeError(
+            "training.stage_epochs の要素数がステージ数と一致しません: "
+            f"{len(stage_epochs_cfg)} != {len(stage_data_paths)}"
+        )
 
     output_path = Path(output_dir)
     if output_path.exists() and any(output_path.iterdir()):
@@ -482,6 +490,23 @@ def run_training(
     stage_records = []
     single_stage = len(stage_data_paths) == 1
     for stage_idx, stage_data_path in enumerate(stage_data_paths, start=1):
+        stage_i = stage_idx - 1
+        stage_learning_rate = (
+            float(stage_learning_rates_cfg[stage_i])
+            if stage_learning_rates_cfg is not None
+            else float(train_cfg["learning_rate"])
+        )
+        stage_epochs = (
+            float(stage_epochs_cfg[stage_i])
+            if stage_epochs_cfg is not None
+            else float(train_cfg["epochs"])
+        )
+        effective_stage_epochs = (
+            float(sanity_num_train_epochs)
+            if sanity and sanity_num_train_epochs is not None
+            else stage_epochs
+        )
+
         if single_stage:
             stage_name = "main"
             stage_run_name = run_name
@@ -495,6 +520,10 @@ def run_training(
             stage_run_name = stage_name if stage_output_names else f"{run_name}-{stage_name}"
             stage_output_dir = Path(output_dir) / stage_name
         print(f"[{stage_name}] Loading dataset: {stage_data_path}")
+        print(
+            f"[{stage_name}] Hyperparams: learning_rate={stage_learning_rate}, "
+            f"epochs={effective_stage_epochs}"
+        )
 
         ds_raw = load_dataset("json", data_files=stage_data_path, split="train")
         ds_raw = ds_raw.train_test_split(test_size=eval_ratio, seed=seed)
@@ -534,8 +563,8 @@ def run_training(
             "max_length": max_length,
             "batch_size": int(train_cfg["batch_size"]),
             "grad_accum": int(train_cfg["grad_accum"]),
-            "learning_rate": float(train_cfg["learning_rate"]),
-            "epochs": effective_epochs,
+            "learning_rate": stage_learning_rate,
+            "epochs": effective_stage_epochs,
             "logging_steps": effective_logging_steps,
             "precision": str(train_cfg["precision"]),
             "packing": bool(train_cfg["packing"]),
@@ -557,16 +586,22 @@ def run_training(
         save_yaml(stage_output_dir / "run_meta.yaml", run_meta)
         save_yaml(stage_output_dir / "length_stats.yaml", length_stats)
         stage_records.append(
-            {"stage": stage_name, "data_path": stage_data_path, "output_dir": str(stage_output_dir)}
+            {
+                "stage": stage_name,
+                "data_path": stage_data_path,
+                "output_dir": str(stage_output_dir),
+                "learning_rate": stage_learning_rate,
+                "epochs": effective_stage_epochs,
+            }
         )
 
         args = SFTConfig(
             output_dir=str(stage_output_dir),
-            num_train_epochs=effective_epochs,
+            num_train_epochs=effective_stage_epochs,
             per_device_train_batch_size=int(train_cfg["batch_size"]),
             per_device_eval_batch_size=int(train_cfg["batch_size"]),
             gradient_accumulation_steps=int(train_cfg["grad_accum"]),
-            learning_rate=float(train_cfg["learning_rate"]),
+            learning_rate=stage_learning_rate,
             save_steps=int(train_cfg["save_steps"]),
             eval_steps=int(train_cfg["eval_steps"]),
             eval_strategy="steps",
